@@ -354,7 +354,10 @@ class LatentAttentionBlockWithFourierKAN(nn.Module):
 
         # Main layer weights
         self.norm    = nn.LayerNorm(self.dim, bias=False)
-        self.expand_kan = FourierKAN(self.dim, 2*self.qk_dim+2*self.expand_dim, gridsize=gridsize, bias=False)
+        self.expand_query_kan = FourierKAN(self.dim, self.qk_dim, gridsize=gridsize, bias=False)
+        self.expand_key_kan = FourierKAN(self.dim, self.qk_dim, gridsize=gridsize, bias=False)
+        self.expand_linear_kan = FourierKAN(self.dim, self.expand_dim, gridsize=gridsize, bias=False)
+        self.expand_pre_gelu_kan = FourierKAN(self.dim, self.expand_dim, gridsize=gridsize, bias=False)
         self.project_kan = FourierKAN(self.expand_dim, self.dim, gridsize=gridsize, bias=False)
         # Learnable linear positional encodings. Similar to but different than https://arxiv.org/abs/2108.12409
         # Has a high lr mult applied to it so that each layer can learn its own attention scale.
@@ -370,7 +373,17 @@ class LatentAttentionBlockWithFourierKAN(nn.Module):
         x = self.norm(x)
 
         # Fused into one kernel for memory+speed/etc
-        query, key, linear, pre_gelu = self.expand_kan(x).split((self.qk_dim, self.qk_dim, self.expand_dim, self.expand_dim), dim=-1)
+        query = torch.empty(x.shape[0], x.shape[1], self.qk_dim, device=x.device, dtype=x.dtype)
+        key = torch.empty(x.shape[0], x.shape[1], self.qk_dim, device=x.device, dtype=x.dtype)
+        linear = torch.empty(x.shape[0], x.shape[1], self.expand_dim, device=x.device, dtype=x.dtype)
+        pre_gelu = torch.empty(x.shape[0], x.shape[1], self.expand_dim, device=x.device, dtype=x.dtype)
+
+        for i, x_batch in enumerate(x):  # kan is so memory hungry that this has to be done with bs=1
+            # kan is so memory hungry that I need to split this up into parts
+            query[i] = self.expand_query_kan(x_batch)
+            key[i] = self.expand_key_kan(x_batch)
+            linear[i] = self.expand_linear_kan(x_batch)
+            pre_gelu[i] = self.expand_pre_gelu_kan(x_batch)
 
         # Compute GeGLU (one portion of the channels this will stay locally, another will become the nonlinear value for attention)
         geglu = linear * F.gelu(pre_gelu)
@@ -394,7 +407,9 @@ class LatentAttentionBlockWithFourierKAN(nn.Module):
             geglu_local = einops.rearrange(geglu_local, 'b h n d -> b n (h d)')
 
         # Output linear layer
-        out = self.project_kan(torch.cat([geglu_local, attention], dim=-1))
+        out = torch.empty(x.shape[0], x.shape[1], self.dim, device=x.device, dtype=x.dtype)
+        for i, x_batch in enumerate(torch.cat([geglu_local, attention], dim=-1)):
+            out[i] = self.project_kan(x_batch)
 
         # Add to residual
         x = residual + out
