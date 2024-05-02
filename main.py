@@ -354,8 +354,8 @@ class LatentAttentionBlockWithFourierKAN(nn.Module):
 
         # Main layer weights
         self.norm    = nn.LayerNorm(self.dim, bias=False)
-        self.expand_kan = FourierKAN(2*self.qk_dim+2*self.expand_dim, self.dim, gridsize=gridsize, bias=False)
-        self.project_kan = FourierKAN(self.dim, self.expand_dim, gridsize=gridsize, bias=False)
+        self.expand_kan = FourierKAN(self.dim, 2*self.qk_dim+2*self.expand_dim, gridsize=gridsize, bias=False)
+        self.project_kan = FourierKAN(self.expand_dim, self.dim, gridsize=gridsize, bias=False)
         # Learnable linear positional encodings. Similar to but different than https://arxiv.org/abs/2108.12409
         # Has a high lr mult applied to it so that each layer can learn its own attention scale.
         self.position_bias_mult = nn.Parameter(torch.tensor(1., device='cuda'))
