@@ -142,7 +142,7 @@ def change_model_scale(
 
 
     # Measure number of parameters
-    net = make_net(dict(depth=depth, width=width, linear_value=False, num_heads=num_heads))
+    net = make_net(dict(depth=depth, width=width, linear_value=False, num_heads=num_heads, kan_fourier=False))  # kan_fourier: measure equivalent parameters
     num_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
     num_non_embedding_params = sum(p.numel() for m in (net.net_dict['attn_layers'] + [net.net_dict['norm']]) for p in m.parameters())
     del net
