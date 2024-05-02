@@ -238,7 +238,7 @@ class FourierKAN(torch.nn.Module):
         #then each coordinates of the output is of unit variance 
         #independently of the various sizes
         self.fouriercoeffs = torch.nn.Parameter( torch.randn(2,out_features,in_features,gridsize) / 
-                                             (torch.sqrt(in_features) * np.sqrt(self.gridsize) ) )
+                                             (math.sqrt(in_features) * math.sqrt(self.gridsize) ) )
         
         self.bias = torch.nn.Parameter( torch.zeros(1,out_features)) if bias else None
 
