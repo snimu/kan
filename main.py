@@ -629,7 +629,8 @@ def train(net: SpeedyLangNet | None = None, **settings):
 
     # Full-run statistics variables
     t_secs        = 0.
-    curr_microbatch_step = curr_step = 0
+    curr_microbatch_step = 0
+    curr_step = 0
     tokens_seen          = 0
 
     # Microbatch growing parameters
