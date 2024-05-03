@@ -27,7 +27,6 @@ import rich
 import torch
 import torch.nn.functional as F
 from torch import nn
-import numpy as np
 import polars as pl
 import wandb
 
@@ -226,28 +225,32 @@ batch_index_offsets = torch.arange(0, hyp['misc']['sequence_length']['max']+1, d
 #            Network Components             #
 #############################################
 
-class FourierKAN(torch.nn.Module):
-    """Taken directly from https://github.com/GistNoesis/FourierKAN/blob/main/fftKAN.py but renamed stuff"""
-    def __init__( self, in_features, out_features, gridsize, bias=True):
-        super().__init__()
+
+
+class NaiveFourierKANLayer(nn.Module):
+    """Taken directly from https://github.com/GistNoesis/FourierKAN/blob/main/fftKAN.py, just imported packages differently"""
+    def __init__( self, inputdim, outdim, gridsize,addbias=True):
+        super(NaiveFourierKANLayer,self).__init__()
+        import numpy as np
         self.gridsize= gridsize
-        self.in_features = in_features
-        self.out_features = out_features
+        self.addbias = addbias
+        self.inputdim = inputdim
+        self.outdim = outdim
         
         #The normalization has been chosen so that if given inputs where each coordinate is of unit variance,
         #then each coordinates of the output is of unit variance 
         #independently of the various sizes
-        self.fouriercoeffs = torch.nn.Parameter( torch.randn(2,out_features,in_features,gridsize) / 
-                                             (math.sqrt(in_features) * math.sqrt(self.gridsize) ) )
-        
-        self.bias = torch.nn.Parameter( torch.zeros(1,out_features)) if bias else None
+        self.fouriercoeffs = nn.Parameter( torch.randn(2,outdim,inputdim,gridsize) / 
+                                             (np.sqrt(inputdim) * np.sqrt(self.gridsize) ) )
+        if( self.addbias ):
+            self.bias  = nn.Parameter( torch.zeros(1,outdim))
 
     #x.shape ( ... , indim ) 
     #out.shape ( ..., outdim)
     def forward(self,x):
         xshp = x.shape
-        outshape = xshp[0:-1]+(self.out_features,)
-        x = torch.reshape(x,(-1,self.in_features))
+        outshape = xshp[0:-1]+(self.outdim,)
+        x = torch.reshape(x,(-1,self.inputdim))
         #Starting at 1 because constant terms are in the bias
         k = torch.reshape( torch.arange(1,self.gridsize+1,device=x.device),(1,1,1,self.gridsize))
         xrshp = torch.reshape(x,(x.shape[0],1,x.shape[1],1) ) 
@@ -257,7 +260,7 @@ class FourierKAN(torch.nn.Module):
         #We compute the interpolation of the various functions defined by their fourier coefficient for each input coordinates and we sum them 
         y =  torch.sum( c*self.fouriercoeffs[0:1],(-2,-1)) 
         y += torch.sum( s*self.fouriercoeffs[1:2],(-2,-1))
-        if self.bias is not None:
+        if( self.addbias):
             y += self.bias
         #End fuse
         '''
@@ -274,6 +277,43 @@ class FourierKAN(torch.nn.Module):
         print(diff) #should be ~0
         '''
         y = torch.reshape( y, outshape)
+        return y
+
+class FourierKAN(nn.Module):
+    """Inspired by https://github.com/GistNoesis/FourierKAN/blob/main/fftKAN.py but readable"""
+
+    def __init__(self, in_features: int, out_features: int, gridsize: int, bias=True):
+        super().__init__()
+        
+        self.frequency_grid = torch.arange(1, gridsize+1, device=hyp['misc']['device'], dtype=hyp['misc']['dtype'])
+        self.frequency_grid = einops.rearrange(self.frequency_grid, 'f -> 1 1 1 f')
+        
+        self.amplitudes_cos = torch.nn.Parameter(
+            torch.randn(1, out_features, in_features, gridsize) / (math.sqrt(in_features) * math.sqrt(self.gridsize)),
+            device=hyp['misc']['device'], dtype=hyp['misc']['dtype'],
+        )
+        self.amplitudes_sin = torch.nn.Parameter(
+            torch.randn(1, out_features, in_features, gridsize) / (math.sqrt(in_features) * math.sqrt(self.gridsize)),
+            device=hyp['misc']['device'], dtype=hyp['misc']['dtype'],
+        )
+        
+        self.bias = torch.nn.Parameter( torch.zeros(1,out_features)) if bias else None
+
+    def forward(self,x):
+        # frequencies shape: ((batch seq) 1 in_features gridsize)
+        frequencies = einops.rearrange(x, "batch seq in_features -> (batch seq) 1 in_features 1") * self.frequency_grid
+
+        # torch.cos(frequencies) * self.amplitudes_cos shape: ((batch seq) out_features in_features gridsize)
+        # Same for sin
+        y = einops.reduce(
+            torch.cos(frequencies) * self.amplitudes_cos + torch.sin(frequencies) * self.amplitudes_sin, 
+            '(batch seq) out_features in_features gridsize -> batch seq out_features', 
+            reduction='sum',
+        )
+
+        if self.bias is not None:
+            y += self.bias
+
         return y
 
 
